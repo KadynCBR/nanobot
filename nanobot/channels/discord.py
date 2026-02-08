@@ -73,12 +73,13 @@ class DiscordChannel(BaseChannel):
             self._http = None
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a message through Discord REST API."""
+        """Send a message through Discord REST API. If 404, try converting user ID to DM channel ID and retry."""
         if not self._http:
             logger.warning("Discord HTTP client not initialized")
             return
 
-        url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
+        channel_id = msg.chat_id
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
         payload: dict[str, Any] = {"content": msg.content}
 
         if msg.reply_to:
@@ -86,7 +87,7 @@ class DiscordChannel(BaseChannel):
             payload["allowed_mentions"] = {"replied_user": False}
 
         headers = {"Authorization": f"Bot {self.config.token}"}
-
+        logger.info(f"Sending message to Discord channel {channel_id}, {url}")
         try:
             for attempt in range(3):
                 try:
@@ -97,6 +98,15 @@ class DiscordChannel(BaseChannel):
                         logger.warning(f"Discord rate limited, retrying in {retry_after}s")
                         await asyncio.sleep(retry_after)
                         continue
+                    if response.status_code == 404 and attempt == 0:
+                        # Try converting user ID to DM channel ID and retry
+                        logger.warning(f"Discord 404: {channel_id} may be a user ID, attempting DM channel fetch.")
+                        dm_channel_id = await self.fetch_dm_channel_id(channel_id)
+                        if dm_channel_id:
+                            channel_id = dm_channel_id
+                            url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+                            logger.info(f"Retrying send to DM channel {channel_id}, {url}")
+                            continue
                     response.raise_for_status()
                     return
                 except Exception as e:
@@ -105,7 +115,7 @@ class DiscordChannel(BaseChannel):
                     else:
                         await asyncio.sleep(1)
         finally:
-            await self._stop_typing(msg.chat_id)
+            await self._stop_typing(channel_id)
 
     async def _gateway_loop(self) -> None:
         """Main gateway loop: identify, heartbeat, dispatch events."""
@@ -229,7 +239,7 @@ class DiscordChannel(BaseChannel):
         await self._handle_message(
             sender_id=sender_id,
             chat_id=channel_id,
-            content="\n".join(p for p in content_parts if p) or "[empty message]",
+            content=f'{author.get("id")}: {"\n".join([p for p in content_parts if p]) or "[empty message]"}',  # should use discord id instead? immutable?
             media=media_paths,
             metadata={
                 "message_id": str(payload.get("id", "")),
@@ -259,3 +269,22 @@ class DiscordChannel(BaseChannel):
         task = self._typing_tasks.pop(channel_id, None)
         if task:
             task.cancel()
+
+    async def fetch_dm_channel_id(self, user_id: str) -> str | None:
+        """Fetch or create a DM channel ID for a user ID."""
+        if not self._http:
+            logger.warning("Discord HTTP client not initialized")
+            return None
+        url = f"{DISCORD_API_BASE}/users/@me/channels"
+        headers = {"Authorization": f"Bot {self.config.token}", "Content-Type": "application/json"}
+        payload = {"recipient_id": user_id}
+        try:
+            resp = await self._http.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            dm_data = resp.json()
+            channel_id = dm_data.get("id")
+            logger.info(f"Fetched/created DM channel for user {user_id}: {channel_id}")
+            return channel_id
+        except Exception as e:
+            logger.error(f"Failed to fetch/create DM channel for user {user_id}: {e}")
+            return None
