@@ -153,10 +153,6 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
 
-        # Session Information (for proactive and scheduleing)
-        if session_info:
-            messages.append({"current-session-info": session_info})
-
         # History
         messages.extend(history)
 
