@@ -9,6 +9,7 @@ from typing import Any, Callable, Coroutine
 
 from loguru import logger
 import datetime
+from zoneinfo import ZoneInfo
 from datetime import timezone, timedelta
 from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
 
@@ -16,7 +17,7 @@ from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule,
 def _now_ms() -> int:
     # Return current time in UTC-8 (Pacific Time) in milliseconds
     # UTC-8 offset
-    tz = timezone(timedelta(hours=-8))
+    tz = ZoneInfo("America/Los_Angeles")
     now = datetime.datetime.now(tz)
     return int(now.timestamp() * 1000)
 
@@ -36,9 +37,11 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
         try:
             from croniter import croniter
 
-            cron = croniter(schedule.expr, time.time())
-            next_time = cron.get_next()
-            return int(next_time * 1000)
+            tz = ZoneInfo("America/Los_Angeles")
+            base = datetime.datetime.now(tz)
+            cron = croniter(schedule.expr, base)
+            next_time = cron.get_next(datetime.datetime)
+            return int(next_time.timestamp() * 1000)
         except Exception:
             return None
 
