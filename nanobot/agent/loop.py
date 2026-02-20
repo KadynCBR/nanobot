@@ -366,6 +366,7 @@ class AgentLoop:
             chat_id=msg.chat_id,
             content=final_content,
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+            is_final=True,  # This is the final response, stop typing indicator
         )
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:

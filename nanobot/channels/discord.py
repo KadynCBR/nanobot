@@ -115,7 +115,9 @@ class DiscordChannel(BaseChannel):
                     else:
                         await asyncio.sleep(1)
         finally:
-            await self._stop_typing(channel_id)
+            # Only stop typing when this is the final message
+            if msg.is_final:
+                await self._stop_typing(channel_id)
 
     async def _gateway_loop(self) -> None:
         """Main gateway loop: identify, heartbeat, dispatch events."""
