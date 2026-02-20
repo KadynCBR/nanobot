@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -36,12 +37,15 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     if schedule.kind == "cron" and schedule.expr:
         try:
             from croniter import croniter
+            from zoneinfo import ZoneInfo
 
-            tz = ZoneInfo("America/Los_Angeles")
-            base = datetime.datetime.now(tz)
-            cron = croniter(schedule.expr, base)
-            next_time = cron.get_next(datetime.datetime)
-            return int(next_time.timestamp() * 1000)
+            # Use caller-provided reference time for deterministic scheduling
+            base_time = now_ms / 1000
+            tz = ZoneInfo(schedule.tz) if schedule.tz else datetime.now().astimezone().tzinfo
+            base_dt = datetime.fromtimestamp(base_time, tz=tz)
+            cron = croniter(schedule.expr, base_dt)
+            next_dt = cron.get_next(datetime)
+            return int(next_dt.timestamp() * 1000)
         except Exception:
             return None
 
