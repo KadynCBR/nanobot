@@ -17,6 +17,29 @@ from nanobot.config.schema import DiscordConfig
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
+MAX_MESSAGE_LEN = 2000  # Discord message character limit
+
+
+def _split_message(content: str, max_len: int = MAX_MESSAGE_LEN) -> list[str]:
+    """Split content into chunks within max_len, preferring line breaks."""
+    if not content:
+        return []
+    if len(content) <= max_len:
+        return [content]
+    chunks: list[str] = []
+    while content:
+        if len(content) <= max_len:
+            chunks.append(content)
+            break
+        cut = content[:max_len]
+        pos = cut.rfind("\n")
+        if pos <= 0:
+            pos = cut.rfind(" ")
+        if pos <= 0:
+            pos = max_len
+        chunks.append(content[:pos])
+        content = content[pos:].lstrip()
+    return chunks
 
 
 class DiscordChannel(BaseChannel):
@@ -51,7 +74,7 @@ class DiscordChannel(BaseChannel):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"Discord gateway error: {e}")
+                logger.warning("Discord gateway error: {}", e)
                 if self._running:
                     logger.info("Reconnecting to Discord gateway in 5 seconds...")
                     await asyncio.sleep(5)
@@ -119,6 +142,26 @@ class DiscordChannel(BaseChannel):
             if msg.is_final:
                 await self._stop_typing(channel_id)
 
+    async def _send_payload(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> bool:
+        """Send a single Discord API payload with retry on rate-limit. Returns True on success."""
+        for attempt in range(3):
+            try:
+                response = await self._http.post(url, headers=headers, json=payload)
+                if response.status_code == 429:
+                    data = response.json()
+                    retry_after = float(data.get("retry_after", 1.0))
+                    logger.warning("Discord rate limited, retrying in {}s", retry_after)
+                    await asyncio.sleep(retry_after)
+                    continue
+                response.raise_for_status()
+                return True
+            except Exception as e:
+                if attempt == 2:
+                    logger.error("Error sending Discord message: {}", e)
+                else:
+                    await asyncio.sleep(1)
+        return False
+
     async def _gateway_loop(self) -> None:
         """Main gateway loop: identify, heartbeat, dispatch events."""
         if not self._ws:
@@ -128,7 +171,7 @@ class DiscordChannel(BaseChannel):
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning(f"Invalid JSON from Discord gateway: {raw[:100]}")
+                logger.warning("Invalid JSON from Discord gateway: {}", raw[:100])
                 continue
 
             op = data.get("op")
@@ -187,7 +230,7 @@ class DiscordChannel(BaseChannel):
                 try:
                     await self._ws.send(json.dumps(payload))
                 except Exception as e:
-                    logger.warning(f"Discord heartbeat failed: {e}")
+                    logger.warning("Discord heartbeat failed: {}", e)
                     break
                 await asyncio.sleep(interval_s)
 
@@ -231,7 +274,7 @@ class DiscordChannel(BaseChannel):
                 media_paths.append(str(file_path))
                 content_parts.append(f"[attachment: {file_path}]")
             except Exception as e:
-                logger.warning(f"Failed to download Discord attachment: {e}")
+                logger.warning("Failed to download Discord attachment: {}", e)
                 content_parts.append(f"[attachment: {filename} - download failed]")
 
         reply_to = (payload.get("referenced_message") or {}).get("id")
@@ -260,8 +303,11 @@ class DiscordChannel(BaseChannel):
             while self._running:
                 try:
                     await self._http.post(url, headers=headers)
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    logger.debug("Discord typing indicator failed for {}: {}", channel_id, e)
+                    return
                 await asyncio.sleep(8)
 
         self._typing_tasks[channel_id] = asyncio.create_task(typing_loop())
