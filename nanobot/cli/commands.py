@@ -263,6 +263,8 @@ def _make_provider(config: Config):
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
+        timeout=config.agents.defaults.timeout,
+        backup_models=config.agents.defaults.backup_models,
     )
 
 

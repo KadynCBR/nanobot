@@ -190,6 +190,8 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_window: int = 100
+    timeout: int = 60  # Request timeout in seconds
+    backup_models: list[str] = Field(default_factory=list)  # Backup models (up to 3) to use on timeout
 
 
 class AgentsConfig(Base):

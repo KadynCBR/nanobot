@@ -32,10 +32,14 @@ class LiteLLMProvider(LLMProvider):
         default_model: str = "anthropic/claude-opus-4-5",
         extra_headers: dict[str, str] | None = None,
         provider_name: str | None = None,
+        timeout: int = 60,
+        backup_models: list[str] | None = None,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
+        self.timeout = timeout
+        self.backup_models = (backup_models or [])[:3]  # Limit to 3 backups
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
@@ -220,15 +224,41 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        try:
-            response = await acompletion(**kwargs)
-            return self._parse_response(response)
-        except Exception as e:
-            # Return error as content for graceful handling
-            return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
-                finish_reason="error",
-            )
+        # Set timeout on the request
+        kwargs["timeout"] = self.timeout
+
+        # Try primary model first, then fall back to backup models on timeout
+        models_to_try = [original_model] + self.backup_models
+
+        last_error = None
+        for attempt_model in models_to_try:
+            try:
+                # Resolve the model (apply prefixes, etc.)
+                resolved_model = self._resolve_model(attempt_model)
+                kwargs["model"] = resolved_model
+
+                response = await acompletion(**kwargs)
+                return self._parse_response(response)
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check if it's a timeout error
+                is_timeout = any(
+                    keyword in error_str
+                    for keyword in ["timeout", "timed out", "request timed out"]
+                )
+                if is_timeout and attempt_model != models_to_try[-1]:
+                    # Timeout on non-last model, try next backup
+                    last_error = e
+                    continue
+                # Non-timeout error or last model failed
+                last_error = e
+                break
+
+        # All models failed
+        return LLMResponse(
+            content=f"Error calling LLM: {str(last_error)}",
+            finish_reason="error",
+        )
 
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
